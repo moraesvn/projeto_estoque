@@ -13,7 +13,7 @@ Notes
 -----
 - All timestamps are stored as local time in ISO format ("YYYY-MM-DD HH:MM:SS").
 - Dates are stored as ISO date strings ("YYYY-MM-DD").
-- Stages are constrained to: "Separação", "Conferencia", "Empacotamento".
+- Stages are constrained to: "Separação", "Conferencia", "Embalagem".
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = "expedicao.db"
 
-STAGES = ("Separação", "Conferencia", "Empacotamento")
+STAGES = ("Separação", "Conferencia", "Embalagem")
 
 
 # -----------------------------
@@ -113,7 +113,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS stage_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id INTEGER NOT NULL,
-                stage TEXT NOT NULL CHECK (stage IN ('Separação','Conferencia','Empacotamento')),
+                stage TEXT NOT NULL CHECK (stage IN ('Separação','Conferencia','Embalagem')),
                 start_time TEXT,
                 end_time TEXT,
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -144,11 +144,13 @@ def add_operator(name: str) -> int:
 
 
 def remove_operator(identifier: int | str) -> None:
+    """Inativa o operador (soft delete) ao invés de remover definitivamente."""
     with get_conn() as conn:
         if isinstance(identifier, int):
-            conn.execute("DELETE FROM operators WHERE id = ?;", (identifier,))
+            conn.execute("UPDATE operators SET active = 0 WHERE id = ?;", (identifier,))
         else:
-            conn.execute("DELETE FROM operators WHERE name = ?;", (identifier,))
+            conn.execute("UPDATE operators SET active = 0 WHERE name = ?;", (identifier,))
+
 
 
 def list_operators(active_only: bool = True) -> List[sqlite3.Row]:
@@ -172,11 +174,13 @@ def add_marketplace(name: str) -> int:
 
 
 def remove_marketplace(identifier: int | str) -> None:
+    """Inativa o marketplace (soft delete) ao invés de remover definitivamente."""
     with get_conn() as conn:
         if isinstance(identifier, int):
-            conn.execute("DELETE FROM marketplaces WHERE id = ?;", (identifier,))
+            conn.execute("UPDATE marketplaces SET active = 0 WHERE id = ?;", (identifier,))
         else:
-            conn.execute("DELETE FROM marketplaces WHERE name = ?;", (identifier,))
+            conn.execute("UPDATE marketplaces SET active = 0 WHERE name = ?;", (identifier,))
+
 
 
 def list_marketplaces(active_only: bool = True) -> List[sqlite3.Row]:
@@ -405,21 +409,7 @@ def fetch_stage_totals_and_orders(
     return out
 
 
-# -----------------------------
-# Convenience seeders (optional)
-# -----------------------------
-
-def ensure_minimum_seed(operators: Iterable[str] = (), marketplaces: Iterable[str] = ()) -> None:
-    """Optionally pre-create some operators/marketplaces (idempotent)."""
-    with get_conn() as conn:
-        for n in operators:
-            conn.execute("INSERT OR IGNORE INTO operators(name) VALUES (?);", (n.strip(),))
-        for n in marketplaces:
-            conn.execute("INSERT OR IGNORE INTO marketplaces(name) VALUES (?);", (n.strip(),))
-
-
 if __name__ == "__main__":
     # Quick manual bootstrap
     init_db()
-    ensure_minimum_seed(["Operador A", "Operador B"], ["Shopee", "Mercado Livre", "Amazon"])
     print("DB initialized at:", DB_PATH)

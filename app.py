@@ -63,8 +63,8 @@ def _parse_iso(ts: str | None) -> str:
 # -----------------------------
 
 def page_registro():
-    st.title("📋 Registro de Expedição")
-    st.caption("Selecione marketplace, operador e pedidos. Inicie e finalize cada etapa para registrar o tempo.")
+    st.title("📋 Registro de Tarefas")
+    st.caption("Selecione o marketplace, operador e inclua a quantidade de pedidos. Inicie e finalize cada etapa.")
 
     # Seletor superior
     ops = list_operators()
@@ -134,7 +134,7 @@ def page_registro():
 # -----------------------------
 
 def page_kpis():
-    st.title("📈 KPIs de Expedição")
+    st.title("📈 KPIs Logística")
 
     # Filtros
     st.sidebar.header("Filtros")
@@ -230,10 +230,10 @@ def page_config():
 def main():
     _ensure_db_once()
 
-    st.set_page_config(page_title="Expedição", page_icon="📦", layout="wide")
+    st.set_page_config(page_title="Logística", page_icon="📦", layout="wide")
 
     with st.sidebar:
-        st.title("📦 Expedição")
+        st.title("📦 Logística")
         page = st.radio("Navegação", ("Registro", "KPIs", "Configurações"))
     
 

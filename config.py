@@ -39,14 +39,14 @@ def render() -> None:
     _ensure_db_once()
 
     st.title("⚙️ Configurações")
-    st.caption("Cadastre operadores e marketplaces. Remova itens quando necessário.")
+    st.caption("Cadastre operadores e marketplaces. Remova quando necessário.")
 
     tab_ops, tab_mkts = st.tabs(["Operadores", "Marketplaces"]) 
 
     with tab_ops:
         st.subheader("Operadores")
         with st.form("form_add_operator", clear_on_submit=True):
-            name = st.text_input("Nome do operador", placeholder="Ex.: João Silva")
+            name = st.text_input("Nome do operador", placeholder="Ex.: Fernando")
             submitted = st.form_submit_button("➕ Adicionar operador", use_container_width=True)
         if submitted:
             clean = _normalize_name(name)
@@ -68,10 +68,13 @@ def render() -> None:
                     st.write(f"👤 {row['name']}")
                 with c2:
                     st.write("Ativo" if row["active"] else "Inativo")
+                # Operadores – botão
                 with c3:
-                    if st.button("Remover", key=f"del_op_{row['id']}", type="secondary"):
-                        remove_operator(int(row["id"]))
-                        st.rerun()
+                    if row["active"]:
+                        if st.button("Inativar", key=f"del_op_{row['id']}", type="secondary"):
+                            remove_operator(int(row["id"]))
+                            st.rerun()
+
 
     with tab_mkts:
         st.subheader("Marketplaces")
@@ -97,11 +100,14 @@ def render() -> None:
                 with c1:
                     st.write(f"🏬 {row['name']}")
                 with c2:
-                    st.write("Ativo" if row.get("active", 1) else "Inativo")
+                    st.write("Ativo" if row["active"] else "Inativo")
+                # Marketplaces – botão
                 with c3:
-                    if st.button("Remover", key=f"del_mkt_{row['id']}", type="secondary"):
-                        remove_marketplace(int(row["id"]))
-                        st.rerun()
+                    if row["active"]:
+                        if st.button("Inativar", key=f"del_mkt_{row['id']}", type="secondary"):
+                            remove_marketplace(int(row["id"]))
+                            st.rerun()
+
 
 
 # Execução direta (útil para desenvolvimento isolado)
