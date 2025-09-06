@@ -13,7 +13,7 @@ Notes
 -----
 - All timestamps are stored as local time in ISO format ("YYYY-MM-DD HH:MM:SS").
 - Dates are stored as ISO date strings ("YYYY-MM-DD").
-- Stages are constrained to: "Separação", "Conferencia", "Embalagem".
+- Stages are constrained to: "Separação", "Conferência", "Embalagem", "Contagem de pacotes".
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 DB_PATH = "expedicao.db"
 
-STAGES = ("Separação", "Conferencia", "Embalagem")
+STAGES = ("Separação", "Conferência", "Embalagem", "Contagem de pacotes")
 
 
 # -----------------------------
@@ -113,7 +113,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS stage_events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id INTEGER NOT NULL,
-                stage TEXT NOT NULL CHECK (stage IN ('Separação','Conferencia','Embalagem')),
+                stage TEXT NOT NULL CHECK (stage IN ('Separação','Conferência','Embalagem', "Contagem de pacotes")),
                 start_time TEXT,
                 end_time TEXT,
                 FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
