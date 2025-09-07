@@ -5,7 +5,6 @@ Tables
 - operators(id, name, active, created_at)
 - marketplaces(id, name, active, created_at)
 - sessions(id, date, operator_id, marketplace_id, num_orders, created_at, updated_at)
-  * UNIQUE(operator_id, marketplace_id, date)
 - stage_events(id, session_id, stage, start_time, end_time)
   * UNIQUE(session_id, stage)
 
@@ -102,8 +101,7 @@ def init_db() -> None:
                 created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
                 updated_at TEXT,
                 FOREIGN KEY(operator_id) REFERENCES operators(id),
-                FOREIGN KEY(marketplace_id) REFERENCES marketplaces(id),
-                UNIQUE(operator_id, marketplace_id, date)
+                FOREIGN KEY(marketplace_id) REFERENCES marketplaces(id)
             );
             """
         )
@@ -194,37 +192,47 @@ def list_marketplaces(active_only: bool = True) -> List[sqlite3.Row]:
 # Sessions (registro do dia)
 # -----------------------------
 
-def get_or_create_session(operator_id: int, marketplace_id: int, session_date: Optional[date | str] = None, num_orders: int = 0) -> int:
-    """Get or create a unique session for (operator, marketplace, date).
+def create_session(operator_id: int, marketplace_id: int, session_date: Optional[date | str] = None, num_orders: int = 0) -> int:
+    """Cria SEMPRE uma nova sessão (lote) e pré-cria as etapas."""
+    if num_orders <= 0:
+        raise ValueError("Quantidade de pedidos deve ser maior que zero para criar um novo lote.")
 
-    Returns the session_id.
-    """
     d = session_date if isinstance(session_date, str) else iso_date(session_date)
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT id FROM sessions WHERE operator_id = ? AND marketplace_id = ? AND date = ?;",
-            (operator_id, marketplace_id, d),
-        ).fetchone()
-        if row:
-            # Optionally update num_orders
-            if num_orders is not None:
-                conn.execute(
-                    "UPDATE sessions SET num_orders = ?, updated_at = ? WHERE id = ?;",
-                    (int(num_orders), iso_now(), int(row[0])),
-                )
-            return int(row[0])
         cur = conn.execute(
             "INSERT INTO sessions(date, operator_id, marketplace_id, num_orders, updated_at) VALUES (?,?,?,?,?);",
-            (d, operator_id, marketplace_id, int(num_orders or 0), iso_now()),
+            (d, operator_id, marketplace_id, int(num_orders), iso_now()),
         )
         session_id = int(cur.lastrowid)
-        # Pre-create stage rows for convenience
         for stage in STAGES:
             conn.execute(
                 "INSERT INTO stage_events(session_id, stage) VALUES (?,?);",
                 (session_id, stage),
             )
         return session_id
+
+
+def list_sessions_today(operator_id: int, marketplace_id: int):
+    """Lista sessões (lotes) do dia atual para o par operador+marketplace, mais recentes primeiro."""
+    today = iso_date()
+    with get_conn(readonly=True) as conn:
+        return conn.execute(
+            """
+            SELECT s.id,
+                   s.date,
+                   s.num_orders,
+                   s.created_at,
+                   m.name AS marketplace
+              FROM sessions s
+              JOIN marketplaces m ON m.id = s.marketplace_id
+             WHERE s.date = ?
+               AND s.operator_id = ?
+               AND s.marketplace_id = ?
+             ORDER BY datetime(s.created_at) DESC, s.id DESC;
+            """,
+            (today, operator_id, marketplace_id),
+        ).fetchall()
+
 
 
 def update_session_orders(session_id: int, num_orders: int) -> None:
@@ -238,6 +246,32 @@ def update_session_orders(session_id: int, num_orders: int) -> None:
 def get_session(session_id: int) -> Optional[sqlite3.Row]:
     with get_conn(readonly=True) as conn:
         return conn.execute("SELECT * FROM sessions WHERE id = ?;", (session_id,)).fetchone()
+
+def list_sessions_today_with_status(operator_id: int, marketplace_id: int):
+    """Lista lotes de hoje para o par operador+marketplace com flag de finalizado."""
+    today = iso_date()
+    with get_conn(readonly=True) as conn:
+        return conn.execute(
+            """
+            SELECT s.id,
+                   s.date,
+                   s.num_orders,
+                   s.created_at,
+                   m.name AS marketplace,
+                   SUM(CASE WHEN e.start_time IS NOT NULL AND e.end_time IS NOT NULL THEN 1 ELSE 0 END) AS completed_stages,
+                   COUNT(e.id) AS total_stages
+              FROM sessions s
+              JOIN marketplaces m ON m.id = s.marketplace_id
+              JOIN stage_events e ON e.session_id = s.id
+             WHERE s.date = ?
+               AND s.operator_id = ?
+               AND s.marketplace_id = ?
+             GROUP BY s.id
+             ORDER BY datetime(s.created_at) DESC, s.id DESC;
+            """,
+            (today, operator_id, marketplace_id),
+        ).fetchall()
+
 
 
 # -----------------------------
@@ -331,6 +365,47 @@ def get_stage_durations_seconds(session_id: int) -> Dict[str, Optional[int]]:
 # -----------------------------
 # Analytics helpers for KPIs
 # -----------------------------
+
+def fetch_end_to_end_totals(start: str, end: str, operator_id: int | None = None, marketplace_id: int | None = None):
+    """
+    Retorna (total_seconds_end2end, total_orders) no intervalo [start, end],
+    considerando cada sessão com start=min(start_time) e end=max(end_time) entre as etapas.
+    Ignora sessões sem start OU end.
+    """
+    params = [start, end]
+    flt = []
+    if operator_id:
+        flt.append("s.operator_id = ?")
+        params.append(operator_id)
+    if marketplace_id:
+        flt.append("s.marketplace_id = ?")
+        params.append(marketplace_id)
+    where_extra = (" AND " + " AND ".join(flt)) if flt else ""
+
+    sql = f"""
+        WITH agg AS (
+            SELECT s.id AS session_id,
+                   s.num_orders AS num_orders,
+                   MIN(e.start_time) AS start_any,
+                   MAX(e.end_time)   AS end_any
+              FROM sessions s
+              JOIN stage_events e ON e.session_id = s.id
+             WHERE s.date BETWEEN ? AND ? {where_extra}
+             GROUP BY s.id
+        )
+        SELECT
+            SUM(CASE WHEN start_any IS NOT NULL AND end_any IS NOT NULL
+                     THEN CAST(strftime('%s', end_any) AS INTEGER) - CAST(strftime('%s', start_any) AS INTEGER)
+                     ELSE 0 END) AS total_seconds,
+            SUM(num_orders) AS total_orders
+        FROM agg;
+    """
+    with get_conn(readonly=True) as conn:
+        row = conn.execute(sql, params).fetchone()
+        total_seconds = int(row["total_seconds"] or 0)
+        total_orders = int(row["total_orders"] or 0)
+        return total_seconds, total_orders
+
 
 def fetch_daily_stage_durations(
     start: str, end: str, operator_id: Optional[int] = None, marketplace_id: Optional[int] = None
