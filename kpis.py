@@ -118,27 +118,24 @@ def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, 
 
 #CARD PARA MOSTRAR MEDIA DE TEMPO GASTO POR DIA COM PEDIDOS (PODE FILTRAR)
 def card_avg_daily_total_time(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
-    df = load_daily(start_iso, end_iso, operator_id, marketplace_id)
-    if df.empty:
-        st.metric("Média de tempo por dia", "00:00:00")
+    from db import fetch_daily_end_to_end
+    rows = fetch_daily_end_to_end(start_iso, end_iso, operator_id, marketplace_id, stage)
+
+    if not rows:
+        st.metric("Média de tempo utilizado por dia", "00:00:00", border=True)
         return
 
-    # aplica filtro de etapa se houver
-    if stage:
-        df = df[df["stage"] == stage]
-        if df.empty:
-            st.metric("Média de tempo por dia", "00:00:00")
-            return
+    # média entre os dias com dados
+    secs = [int(r["total_seconds"] or 0) for r in rows]
+    if not secs or sum(secs) == 0:
+        st.metric("Média de tempo utilizado por dia", "00:00:00", border=True)
+        return
 
-    # soma por dia e calcula média entre os dias com dados
-    per_day = df.groupby("day", as_index=False)["duration_seconds"].sum()
-    avg_sec = per_day["duration_seconds"].mean()
-
-        # formata HH:MM:SS
-    avg_sec = int(round(avg_sec))
+    avg_sec = int(round(sum(secs) / len(secs)))
     h, rem = divmod(avg_sec, 3600)
     m, s = divmod(rem, 60)
-    st.metric("Média de tempo por dia", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+    st.metric("Média de tempo utilizado por dia", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+
 
 #TABELA COMPLETA SESSIONS DO BANCO DE DADOS
 def table_all_sessions():
@@ -185,24 +182,30 @@ def table_all_stage_events():
 # Render principal
 # -----------------------------
 
+
 def render():
     st.title("📈 KPIs Logística")
     start_iso, end_iso = sidebar_period_filters()
     operator_id, marketplace_id, stage = sidebar_entity_filters()
 
     st.divider()
+
     
-    st.subheader(" :green[Métricas]")
+    st.subheader(" :green[📊 Métricas]")
+
+
     # Dentro do render(), onde quiser mostrar os cards:
     col1, col2, col3 = st.columns(3)
     with col1:
         card_orders_per_hour(start_iso, end_iso, operator_id, marketplace_id)
     with col2:
         card_avg_daily_total_time(start_iso, end_iso, operator_id, marketplace_id, stage)    
+    with col3:
+        st.metric("Média de tempo utilizado por pedido","0", border=True)
+
+    st.divider()
 
     table_all_sessions()   
     table_all_stage_events()
        
 
-
-  
