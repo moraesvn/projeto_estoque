@@ -483,28 +483,21 @@ def fetch_stage_totals_and_orders(
             }
     return out
 
+
+#FUNCAO PARA USAR NA MEDIA DE TEMPO GASTO POR DIA
 def fetch_daily_end_to_end(start: str, end: str, operator_id: int | None = None, marketplace_id: int | None = None, stage: str | None = None):
-    """
-    Retorna lista de linhas: (day, total_seconds) por dia no intervalo [start, end].
-    - Se stage=None: usa duração ponta-a-ponta por sessão (min start_time, max end_time).
-    - Se stage informado: usa apenas a duração da etapa específica por sessão.
-    Ignora sessões sem início OU fim (na métrica correspondente).
-    """
     params = [start, end]
     flt = []
     if operator_id:
-        flt.append("s.operator_id = ?")
-        params.append(operator_id)
+        flt.append("s.operator_id = ?"); params.append(operator_id)
     if marketplace_id:
-        flt.append("s.marketplace_id = ?")
-        params.append(marketplace_id)
+        flt.append("s.marketplace_id = ?"); params.append(marketplace_id)
     where_extra = (" AND " + " AND ".join(flt)) if flt else ""
 
     if stage is None:
         sql = f"""
             WITH per_session AS (
-                SELECT s.id AS session_id,
-                       s.date AS day,
+                SELECT s.id, s.date AS day,
                        MIN(e.start_time) AS start_any,
                        MAX(e.end_time)   AS end_any
                   FROM sessions s
@@ -513,11 +506,9 @@ def fetch_daily_end_to_end(start: str, end: str, operator_id: int | None = None,
                  GROUP BY s.id, s.date
             )
             SELECT day,
-                   SUM(
-                     CASE WHEN start_any IS NOT NULL AND end_any IS NOT NULL
-                          THEN CAST(strftime('%s', end_any) AS INTEGER) - CAST(strftime('%s', start_any) AS INTEGER)
-                          ELSE 0 END
-                   ) AS total_seconds
+                   SUM(CASE WHEN start_any IS NOT NULL AND end_any IS NOT NULL
+                            THEN CAST(strftime('%s', end_any) AS INTEGER) - CAST(strftime('%s', start_any) AS INTEGER)
+                            ELSE 0 END) AS total_seconds
               FROM per_session
              GROUP BY day
              ORDER BY day ASC;
@@ -527,8 +518,7 @@ def fetch_daily_end_to_end(start: str, end: str, operator_id: int | None = None,
     else:
         sql = f"""
             WITH per_session AS (
-                SELECT s.id AS session_id,
-                       s.date AS day,
+                SELECT s.id, s.date AS day,
                        MIN(CASE WHEN e.stage = ? THEN e.start_time END) AS stg_start,
                        MAX(CASE WHEN e.stage = ? THEN e.end_time   END) AS stg_end
                   FROM sessions s
@@ -537,17 +527,21 @@ def fetch_daily_end_to_end(start: str, end: str, operator_id: int | None = None,
                  GROUP BY s.id, s.date
             )
             SELECT day,
-                   SUM(
-                     CASE WHEN stg_start IS NOT NULL AND stg_end IS NOT NULL
-                          THEN CAST(strftime('%s', stg_end) AS INTEGER) - CAST(strftime('%s', stg_start) AS INTEGER)
-                          ELSE 0 END
-                   ) AS total_seconds
+                   SUM(CASE WHEN stg_start IS NOT NULL AND stg_end IS NOT NULL
+                            THEN CAST(strftime('%s', stg_end) AS INTEGER) - CAST(strftime('%s', stg_start) AS INTEGER)
+                            ELSE 0 END) AS total_seconds
               FROM per_session
              GROUP BY day
              ORDER BY day ASC;
         """
         with get_conn(readonly=True) as conn:
             return conn.execute(sql, [stage, stage] + params).fetchall()
+
+#FUNCAO PARA DELETAR UM REGISTRO DO BD
+def delete_session(session_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE id = ?;", (int(session_id),))
+
 
 
 if __name__ == "__main__":

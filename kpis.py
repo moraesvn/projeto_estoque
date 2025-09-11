@@ -15,6 +15,7 @@ from db import (
     list_marketplaces,
     fetch_daily_stage_durations,
     fetch_stage_totals_and_orders,
+    fetch_end_to_end_totals,
     STAGES,
 )
 
@@ -108,11 +109,18 @@ def load_daily(start_iso: str, end_iso: str, operator_id: int | None, marketplac
     return pd.DataFrame(rows, columns=["day", "stage", "duration_seconds"]) if rows else pd.DataFrame(columns=["day","stage","duration_seconds"]) 
 
 #Calcula média de pedidos por hora
-def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None):
-    from db import fetch_end_to_end_totals
-    total_seconds, total_orders = fetch_end_to_end_totals(start_iso, end_iso, operator_id, marketplace_id)
+def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
+    
+    if stage is None:
+        total_seconds, total_orders = fetch_end_to_end_totals(start_iso, end_iso, operator_id, marketplace_id)
+    else:
+        totals = fetch_stage_totals_and_orders(start_iso, end_iso, operator_id, marketplace_id)
+        total_seconds = float(totals.get(stage, {}).get("total_seconds", 0.0))
+        total_orders = float(totals.get(stage, {}).get("total_orders", 0.0))
+
     pedidos_por_hora = (total_orders / (total_seconds / 3600)) if total_seconds > 0 else 0.0
-    st.metric("Média de pedidos por hora", f"{pedidos_por_hora:.0f} pedidos/h", border=True)
+    st.metric("**:blue[Média de pedidos por hora]**", f"{pedidos_por_hora:.0f} pedidos/h", border=True)
+
 
 
 
@@ -122,19 +130,35 @@ def card_avg_daily_total_time(start_iso: str, end_iso: str, operator_id: int | N
     rows = fetch_daily_end_to_end(start_iso, end_iso, operator_id, marketplace_id, stage)
 
     if not rows:
-        st.metric("Média de tempo utilizado por dia", "00:00:00", border=True)
-        return
+        st.metric("**:blue[Horas utilizadas por dia]**", "00:00:00", border=True); return
 
-    # média entre os dias com dados
-    secs = [int(r["total_seconds"] or 0) for r in rows]
-    if not secs or sum(secs) == 0:
-        st.metric("Média de tempo utilizado por dia", "00:00:00", border=True)
-        return
+    secs = [int(r["total_seconds"] or 0) for r in rows if (r["total_seconds"] or 0) > 0]
+    if not secs:
+        st.metric("**:blue[Horas utilizadas por dia", "00:00:00]**", border=True); return
 
     avg_sec = int(round(sum(secs) / len(secs)))
-    h, rem = divmod(avg_sec, 3600)
-    m, s = divmod(rem, 60)
-    st.metric("Média de tempo utilizado por dia", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+    h, rem = divmod(avg_sec, 3600); m, s = divmod(rem, 60)
+    st.metric("**:blue[Horas utilizadas por dia]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+
+
+def card_avg_time_per_order(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
+
+    if stage is None:
+        total_seconds, total_orders = fetch_end_to_end_totals(start_iso, end_iso, operator_id, marketplace_id)
+    else:
+        totals = fetch_stage_totals_and_orders(start_iso, end_iso, operator_id, marketplace_id)
+        total_seconds = float(totals.get(stage, {}).get("total_seconds", 0.0))
+        total_orders = float(totals.get(stage, {}).get("total_orders", 0.0))
+
+    if not total_orders or total_seconds <= 0:
+        st.metric("**:blue[Tempo médio por pedido]**", "00:00:00", border=True)
+        return
+
+    avg_sec = int(round(total_seconds / total_orders))
+    h, rem = divmod(avg_sec, 3600); m, s = divmod(rem, 60)
+    st.metric("**:blue[Tempo médio por pedido]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+
+
 
 
 #TABELA COMPLETA SESSIONS DO BANCO DE DADOS
@@ -176,6 +200,103 @@ def table_all_stage_events():
     st.subheader("Todas as etapas")
     st.dataframe(df, use_container_width=True)
 
+def data_editor_sessions_delete():
+    """Lista sessões em st.data_editor com checkbox de seleção e botão para excluir."""
+    from db import get_conn, delete_session
+    with get_conn(readonly=True) as conn:
+        rows = conn.execute("""
+            SELECT s.id, s.date, s.num_orders, s.created_at,
+                   o.name AS operator_name, m.name AS marketplace_name
+              FROM sessions s
+              JOIN operators o ON o.id = s.operator_id
+              JOIN marketplaces m ON m.id = s.marketplace_id
+             ORDER BY datetime(s.created_at) DESC, s.id DESC;
+        """).fetchall()
+
+    import pandas as pd
+    df = pd.DataFrame(rows, columns=rows[0].keys()) if rows else pd.DataFrame(
+        columns=["id","date","num_orders","created_at","operator_name","marketplace_name"]
+    )
+    if df.empty:
+        st.info("Sem sessões para excluir.")
+        return
+
+    # Checkbox de seleção (não persistido no BD, apenas na UI)
+    df.insert(0, "Selecionar", False)
+
+    st.subheader("Gerenciar sessões (seleção e exclusão)")
+    edited = st.data_editor(
+        df,
+        use_container_width=True,
+        disabled=["id","date","num_orders","created_at","operator_name","marketplace_name"],  # só a coluna Selecionar é editável
+        hide_index=True,
+        num_rows="fixed",
+    )
+
+    selecionados = edited.loc[edited["Selecionar"] == True, "id"].astype(int).tolist()
+
+    col_a, col_b = st.columns([1, 3])
+    with col_a:
+        if st.button(f"🗑️ Excluir {len(selecionados)} selecionado(s)", disabled=(len(selecionados) == 0)):
+            st.session_state["_confirm_delete_ids"] = selecionados
+            st.warning(f"Confirma excluir {len(selecionados)} sessão(ões)? Ação irreversível.")
+    with col_b:
+        if st.session_state.get("_confirm_delete_ids"):
+            if st.button("✅ Confirmar exclusão"):
+                for sid in st.session_state["_confirm_delete_ids"]:
+                    delete_session(sid)
+                st.success(f"{len(st.session_state['_confirm_delete_ids'])} sessão(ões) excluída(s).")
+                st.session_state.pop("_confirm_delete_ids", None)
+                st.rerun()
+
+def chart_orders_vs_time(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
+    from db import fetch_daily_end_to_end
+    import altair as alt
+
+    # ---- dados de tempo gasto por dia ----
+    rows_time = fetch_daily_end_to_end(start_iso, end_iso, operator_id, marketplace_id, stage)
+    df_time = pd.DataFrame(rows_time, columns=["day", "total_seconds"]) if rows_time else pd.DataFrame(columns=["day","total_seconds"])
+    if not df_time.empty:
+        df_time["total_hours"] = df_time["total_seconds"] / 3600
+
+    # ---- dados de pedidos/hora por dia ----
+    # usamos stage_totals para pegar pedidos e tempo
+    from db import fetch_end_to_end_totals, fetch_stage_totals_and_orders
+    per_day = []
+    current = pd.to_datetime(start_iso)
+    end_dt = pd.to_datetime(end_iso)
+    while current <= end_dt:
+        d = current.date().isoformat()
+        if stage is None:
+            secs, orders = fetch_end_to_end_totals(d, d, operator_id, marketplace_id)
+        else:
+            totals = fetch_stage_totals_and_orders(d, d, operator_id, marketplace_id)
+            secs = totals.get(stage, {}).get("total_seconds", 0)
+            orders = totals.get(stage, {}).get("total_orders", 0)
+        per_hour = (orders / (secs/3600)) if secs and orders else 0
+        per_day.append({"day": d, "orders_per_hour": per_hour})
+        current += pd.Timedelta(days=1)
+    df_orders = pd.DataFrame(per_day)
+
+    if df_time.empty and df_orders.empty:
+        st.info("Sem dados para o período.")
+        return
+
+    # ---- unir dados ----
+    df = pd.merge(df_orders, df_time[["day","total_hours"]], on="day", how="outer").fillna(0)
+
+    # ---- gráfico ----
+    base = alt.Chart(df).encode(x="day:T")
+
+    line1 = base.mark_line(point=True, color="steelblue").encode(
+        y=alt.Y("orders_per_hour:Q", axis=alt.Axis(title="Pedidos por hora", titleColor="steelblue"))
+    )
+    line2 = base.mark_line(point=True, color="green").encode(
+        y=alt.Y("total_hours:Q", axis=alt.Axis(title="Tempo gasto (h)", titleColor="green"))
+    )
+
+    st.subheader("Produtividade x Tempo por dia")
+    st.altair_chart(alt.layer(line1, line2).resolve_scale(y="independent").interactive(), use_container_width=True)
 
 
 # -----------------------------
@@ -197,13 +318,23 @@ def render():
     # Dentro do render(), onde quiser mostrar os cards:
     col1, col2, col3 = st.columns(3)
     with col1:
-        card_orders_per_hour(start_iso, end_iso, operator_id, marketplace_id)
+        card_orders_per_hour(start_iso, end_iso, operator_id, marketplace_id, stage)
+
     with col2:
         card_avg_daily_total_time(start_iso, end_iso, operator_id, marketplace_id, stage)    
     with col3:
-        st.metric("Média de tempo utilizado por pedido","0", border=True)
+        card_avg_time_per_order(start_iso, end_iso, operator_id, marketplace_id, stage)
+
 
     st.divider()
+
+    chart_orders_vs_time(start_iso, end_iso, operator_id, marketplace_id, stage)
+
+
+
+
+    data_editor_sessions_delete()
+
 
     table_all_sessions()   
     table_all_stage_events()
