@@ -120,6 +120,16 @@ def init_db() -> None:
             """
         )
 
+        cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key   TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        """
+        )
+
+
         # Helpful indexes
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sessions_operator ON sessions(operator_id);")
@@ -482,6 +492,27 @@ def fetch_stage_totals_and_orders(
                 "avg_seconds_per_order": avg,
             }
     return out
+
+
+#FUNCOES PARA USAR NA META
+def set_setting(key: str, value: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+            (key, value),
+        )
+
+def get_setting(key: str, default: str | None = None) -> str | None:
+    with get_conn(readonly=True) as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?;", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+
+
+
+
+
 
 
 #FUNCAO PARA USAR NA MEDIA DE TEMPO GASTO POR DIA

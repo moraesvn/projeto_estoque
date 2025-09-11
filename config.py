@@ -16,7 +16,9 @@ from db import (
     remove_marketplace,
     list_marketplaces,
     get_conn,
-    delete_session
+    delete_session,
+    get_setting,
+    set_setting
 )
 
 
@@ -155,6 +157,24 @@ def render() -> None:
                             st.rerun()
 
     with tab_cfg:
+        
+        
+
+        st.subheader("Meta de produtividade")
+        current = int(float(get_setting("orders_per_hour_target", "0") or 0))
+        col_a, col_b = st.columns([2,1])
+        with col_a:
+            target = st.number_input("Meta de pedidos por hora", min_value=0, step=1, value=current)
+        with col_b:
+            st.markdown('')
+            st.markdown('')
+            if st.button("Salvar meta"):
+                set_setting("orders_per_hour_target", str(int(target)))
+                st.success(f"Meta salva: {int(target)} pedidos/h")
+
+
+
+
         st.subheader("Excluir lotes")
         data_editor_sessions_delete()
 
