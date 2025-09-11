@@ -200,58 +200,9 @@ def table_all_stage_events():
     st.subheader("Todas as etapas")
     st.dataframe(df, use_container_width=True)
 
-def data_editor_sessions_delete():
-    """Lista sessões em st.data_editor com checkbox de seleção e botão para excluir."""
-    from db import get_conn, delete_session
-    with get_conn(readonly=True) as conn:
-        rows = conn.execute("""
-            SELECT s.id, s.date, s.num_orders, s.created_at,
-                   o.name AS operator_name, m.name AS marketplace_name
-              FROM sessions s
-              JOIN operators o ON o.id = s.operator_id
-              JOIN marketplaces m ON m.id = s.marketplace_id
-             ORDER BY datetime(s.created_at) DESC, s.id DESC;
-        """).fetchall()
-
-    import pandas as pd
-    df = pd.DataFrame(rows, columns=rows[0].keys()) if rows else pd.DataFrame(
-        columns=["id","date","num_orders","created_at","operator_name","marketplace_name"]
-    )
-    if df.empty:
-        st.info("Sem sessões para excluir.")
-        return
-
-    # Checkbox de seleção (não persistido no BD, apenas na UI)
-    df.insert(0, "Selecionar", False)
-
-    st.subheader("Gerenciar sessões (seleção e exclusão)")
-    edited = st.data_editor(
-        df,
-        use_container_width=True,
-        disabled=["id","date","num_orders","created_at","operator_name","marketplace_name"],  # só a coluna Selecionar é editável
-        hide_index=True,
-        num_rows="fixed",
-    )
-
-    selecionados = edited.loc[edited["Selecionar"] == True, "id"].astype(int).tolist()
-
-    col_a, col_b = st.columns([1, 3])
-    with col_a:
-        if st.button(f"🗑️ Excluir {len(selecionados)} selecionado(s)", disabled=(len(selecionados) == 0)):
-            st.session_state["_confirm_delete_ids"] = selecionados
-            st.warning(f"Confirma excluir {len(selecionados)} sessão(ões)? Ação irreversível.")
-    with col_b:
-        if st.session_state.get("_confirm_delete_ids"):
-            if st.button("✅ Confirmar exclusão"):
-                for sid in st.session_state["_confirm_delete_ids"]:
-                    delete_session(sid)
-                st.success(f"{len(st.session_state['_confirm_delete_ids'])} sessão(ões) excluída(s).")
-                st.session_state.pop("_confirm_delete_ids", None)
-                st.rerun()
 
 def chart_orders_vs_time(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
     from db import fetch_daily_end_to_end
-    import altair as alt
 
     # ---- dados de tempo gasto por dia ----
     rows_time = fetch_daily_end_to_end(start_iso, end_iso, operator_id, marketplace_id, stage)
@@ -281,6 +232,11 @@ def chart_orders_vs_time(start_iso: str, end_iso: str, operator_id: int | None, 
     if df_time.empty and df_orders.empty:
         st.info("Sem dados para o período.")
         return
+
+    # após montar df_time
+    df_time = pd.DataFrame(rows_time, columns=["day", "total_seconds"]) if rows_time else pd.DataFrame(columns=["day","total_seconds"])
+    # garanta a coluna, mesmo se vazio
+    df_time["total_hours"] = (df_time["total_seconds"].astype(float) / 3600.0).fillna(0.0)
 
     # ---- unir dados ----
     df = pd.merge(df_orders, df_time[["day","total_hours"]], on="day", how="outer").fillna(0)
@@ -329,11 +285,6 @@ def render():
     st.divider()
 
     chart_orders_vs_time(start_iso, end_iso, operator_id, marketplace_id, stage)
-
-
-
-
-    data_editor_sessions_delete()
 
 
     table_all_sessions()   
