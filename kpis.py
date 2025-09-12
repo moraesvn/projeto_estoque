@@ -16,6 +16,7 @@ from db import (
     fetch_daily_stage_durations,
     fetch_stage_totals_and_orders,
     fetch_end_to_end_totals,
+    get_setting,
     STAGES,
 )
 
@@ -110,7 +111,8 @@ def load_daily(start_iso: str, end_iso: str, operator_id: int | None, marketplac
 
 #Calcula média de pedidos por hora
 def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
-    
+
+    # calcula pedidos/hora conforme filtro de etapa
     if stage is None:
         total_seconds, total_orders = fetch_end_to_end_totals(start_iso, end_iso, operator_id, marketplace_id)
     else:
@@ -119,7 +121,24 @@ def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, 
         total_orders = float(totals.get(stage, {}).get("total_orders", 0.0))
 
     pedidos_por_hora = (total_orders / (total_seconds / 3600)) if total_seconds > 0 else 0.0
-    st.metric("**:blue[Média de pedidos por hora]**", f"{pedidos_por_hora:.0f} pedidos/h", border=True)
+
+    # meta (inteira) e delta
+    target = int(float(get_setting("orders_per_hour_target", "0") or 0))
+    diff = pedidos_por_hora - target
+
+    if diff > 0:
+        delta_text = f"{diff:.0f} pedidos acima da meta: {target}"
+    elif diff < 0:
+        delta_text = f"{abs(diff):.0f} pedidos abaixo da meta: {target}"
+    else:
+        delta_text = f"Estamos no alvo: {target}"
+
+    st.metric(
+        "**:blue[Média de pedidos por hora]**",
+        f"{pedidos_por_hora:.0f} pedidos/h",
+        delta=delta_text, border=True
+    )
+
 
 
 
@@ -130,15 +149,15 @@ def card_avg_daily_total_time(start_iso: str, end_iso: str, operator_id: int | N
     rows = fetch_daily_end_to_end(start_iso, end_iso, operator_id, marketplace_id, stage)
 
     if not rows:
-        st.metric("**:blue[Horas utilizadas por dia]**", "00:00:00", border=True); return
+        st.metric("**:green[Horas utilizadas por dia]**", "00:00:00", border=True); return
 
     secs = [int(r["total_seconds"] or 0) for r in rows if (r["total_seconds"] or 0) > 0]
     if not secs:
-        st.metric("**:blue[Horas utilizadas por dia", "00:00:00]**", border=True); return
+        st.metric("**:green[Horas utilizadas por dia", "00:00:00]**", border=True); return
 
     avg_sec = int(round(sum(secs) / len(secs)))
     h, rem = divmod(avg_sec, 3600); m, s = divmod(rem, 60)
-    st.metric("**:blue[Horas utilizadas por dia]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+    st.metric("**:green[Horas utilizadas por dia]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
 
 
 def card_avg_time_per_order(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
@@ -151,12 +170,12 @@ def card_avg_time_per_order(start_iso: str, end_iso: str, operator_id: int | Non
         total_orders = float(totals.get(stage, {}).get("total_orders", 0.0))
 
     if not total_orders or total_seconds <= 0:
-        st.metric("**:blue[Tempo médio por pedido]**", "00:00:00", border=True)
+        st.metric("**:yellow[Tempo médio por pedido]**", "00:00:00", border=True)
         return
 
     avg_sec = int(round(total_seconds / total_orders))
     h, rem = divmod(avg_sec, 3600); m, s = divmod(rem, 60)
-    st.metric("**:blue[Tempo médio por pedido]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+    st.metric("**:yellow[Tempo médio por pedido]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
 
 
 
@@ -268,7 +287,7 @@ def render():
     st.divider()
 
     
-    st.subheader(" :green[📊 Métricas]")
+    st.subheader(" :red[📊 Métricas]")
 
 
     # Dentro do render(), onde quiser mostrar os cards:
