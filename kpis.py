@@ -5,7 +5,7 @@ Use `render()` a partir do `app.py`.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 import pandas as pd
 import streamlit as st
 import altair as alt
@@ -96,9 +96,87 @@ def sidebar_entity_filters():
 
     return operator_id, marketplace_id, stage
 
+#FUNCAO PARA RECEBER A UNIR DOS INTERVALOR POR DIA. 
+def _union_active_seconds_by_day(rows) -> pd.DataFrame:
+    """
+    Recebe rows com colunas: day (YYYY-MM-DD), start_ts ('YYYY-MM-DD HH:MM:SS'), end_ts (idem).
+    Retorna DataFrame: columns=['day','active_seconds'] com a soma da UNIÃO de intervalos por dia.
+    """
+    by_day = {}
+    for r in rows:
+        day = r["day"]
+        s = r["start_ts"]; e = r["end_ts"]
+        if not (s and e):
+            continue
+        by_day.setdefault(day, []).append((
+            datetime.strptime(s, "%Y-%m-%d %H:%M:%S"),
+            datetime.strptime(e, "%Y-%m-%d %H:%M:%S"),
+        ))
+
+    out = []
+    for day, intervals in by_day.items():
+        if not intervals:
+            out.append({"day": day, "active_seconds": 0})
+            continue
+        # ordenar por início
+        intervals.sort(key=lambda t: t[0])
+        merged = []
+        cur_s, cur_e = intervals[0]
+        for s, e in intervals[1:]:
+            if s <= cur_e:  # sobreposição
+                if e > cur_e:
+                    cur_e = e
+            else:
+                merged.append((cur_s, cur_e))
+                cur_s, cur_e = s, e
+        merged.append((cur_s, cur_e))
+        # somar duração dos mergeados
+        total = sum(int((e - s).total_seconds()) for s, e in merged)
+        out.append({"day": day, "active_seconds": total})
+
+    return pd.DataFrame(out, columns=["day", "active_seconds"]).sort_values("day")
+
+def compute_orders_per_hour_union(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
+    """
+    Calcula pedidos/hora usando a UNIÃO de intervalos ativos.
+    - Numerador: soma de num_orders das sessões no período (mesmo com filtro de etapa).
+    - Denominador: soma da união de intervalos ativos (ponta-a-ponta ou da etapa, conforme 'stage').
+    Retorna: (pedidos_por_hora: float, active_seconds: int, total_orders: int)
+    """
+    from db import fetch_session_intervals, get_conn
+
+    # 1) Intervalos por sessão (conforme stage) e união por dia
+    rows = fetch_session_intervals(start_iso, end_iso, operator_id, marketplace_id, stage)
+    df_union = _union_active_seconds_by_day(rows)
+    active_seconds = int(df_union["active_seconds"].sum()) if not df_union.empty else 0
+
+    # 2) Total de pedidos no mesmo filtro de sessões
+    params = [start_iso, end_iso]
+    flt = []
+    if operator_id:
+        flt.append("s.operator_id = ?"); params.append(operator_id)
+    if marketplace_id:
+        flt.append("s.marketplace_id = ?"); params.append(marketplace_id)
+    where_extra = (" AND " + " AND ".join(flt)) if flt else ""
+
+    with get_conn(readonly=True) as conn:
+        row = conn.execute(
+            f"""
+            SELECT COALESCE(SUM(s.num_orders), 0) AS total_orders
+              FROM sessions s
+             WHERE s.date BETWEEN ? AND ? {where_extra};
+            """,
+            params,
+        ).fetchone()
+    total_orders = int(row["total_orders"] or 0)
+
+    # 3) Pedidos por hora (ponderado pela união de intervalos)
+    pedidos_por_hora = (total_orders / (active_seconds / 3600.0)) if active_seconds > 0 else 0.0
+    return pedidos_por_hora, active_seconds, total_orders
+
 
 # -----------------------------
-# Data access (pequenos blocos)
+# Data access 
 # -----------------------------
 
 def load_totals(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None):
@@ -111,33 +189,24 @@ def load_daily(start_iso: str, end_iso: str, operator_id: int | None, marketplac
 
 #Calcula média de pedidos por hora
 def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
-
-    # calcula pedidos/hora conforme filtro de etapa
-    if stage is None:
-        total_seconds, total_orders = fetch_end_to_end_totals(start_iso, end_iso, operator_id, marketplace_id)
-    else:
-        totals = fetch_stage_totals_and_orders(start_iso, end_iso, operator_id, marketplace_id)
-        total_seconds = float(totals.get(stage, {}).get("total_seconds", 0.0))
-        total_orders = float(totals.get(stage, {}).get("total_orders", 0.0))
-
-    pedidos_por_hora = (total_orders / (total_seconds / 3600)) if total_seconds > 0 else 0.0
-
-    # meta (inteira) e delta
-    target = int(float(get_setting("orders_per_hour_target", "0") or 0))
-    diff = pedidos_por_hora - target
-
-    if diff > 0:
-        delta_text = f"{diff:.0f} pedidos acima da meta: {target}"
-    elif diff < 0:
-        delta_text = f"{abs(diff):.0f} pedidos abaixo da meta: {target}"
-    else:
-        delta_text = f"Estamos no alvo: {target}"
-
-    st.metric(
-        "**:blue[Média de pedidos por hora]**",
-        f"{pedidos_por_hora:.0f} pedidos/h",
-        delta=delta_text, border=True
+    
+    # usa a união de intervalos (corrige lotes em paralelo)
+    pph, active_seconds, total_orders = compute_orders_per_hour_union(
+        start_iso, end_iso, operator_id, marketplace_id, stage
     )
+
+    # meta inteira e delta em texto humano
+    target = int(float(get_setting("orders_per_hour_target", "0") or 0))
+    diff = pph - target
+    if diff > 0:
+        delta_text = f"{diff:.0f} pedidos acima da meta ({target})"
+    elif diff < 0:
+        delta_text = f"{abs(diff):.0f} pedidos abaixo da meta ({target})"
+    else:
+        delta_text = f"Estamos no alvo ({target})"
+
+    st.metric("**:blue[Média de pedidos por hora]**", f"{pph:.0f} pedidos/h", delta=delta_text, border=True)
+
 
 
 
@@ -145,37 +214,37 @@ def card_orders_per_hour(start_iso: str, end_iso: str, operator_id: int | None, 
 
 #CARD PARA MOSTRAR MEDIA DE TEMPO GASTO POR DIA COM PEDIDOS (PODE FILTRAR)
 def card_avg_daily_total_time(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
-    from db import fetch_daily_end_to_end
-    rows = fetch_daily_end_to_end(start_iso, end_iso, operator_id, marketplace_id, stage)
+    from db import fetch_session_intervals
 
-    if not rows:
-        st.metric("**:green[Horas utilizadas por dia]**", "00:00:00", border=True); return
+    # pega intervalos por sessão (ponta-a-ponta ou da etapa) e une por dia
+    rows = fetch_session_intervals(start_iso, end_iso, operator_id, marketplace_id, stage)
+    df_union = _union_active_seconds_by_day(rows)
 
-    secs = [int(r["total_seconds"] or 0) for r in rows if (r["total_seconds"] or 0) > 0]
-    if not secs:
-        st.metric("**:green[Horas utilizadas por dia", "00:00:00]**", border=True); return
+    if df_union.empty:
+        st.metric("**:green[Média de tempo utilizado por dia]**", "00:00:00", border=True)
+        return
 
-    avg_sec = int(round(sum(secs) / len(secs)))
-    h, rem = divmod(avg_sec, 3600); m, s = divmod(rem, 60)
-    st.metric("**:green[Horas utilizadas por dia]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+    # média entre dias com dados (tempo ativo, sem dupla contagem)
+    avg_sec = int(round(df_union["active_seconds"].mean()))
+    h, rem = divmod(avg_sec, 3600)
+    m, s = divmod(rem, 60)
+    st.metric("**:green[Média de tempo utilizado por dia]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+
 
 
 def card_avg_time_per_order(start_iso: str, end_iso: str, operator_id: int | None, marketplace_id: int | None, stage: str | None):
-
-    if stage is None:
-        total_seconds, total_orders = fetch_end_to_end_totals(start_iso, end_iso, operator_id, marketplace_id)
-    else:
-        totals = fetch_stage_totals_and_orders(start_iso, end_iso, operator_id, marketplace_id)
-        total_seconds = float(totals.get(stage, {}).get("total_seconds", 0.0))
-        total_orders = float(totals.get(stage, {}).get("total_orders", 0.0))
-
-    if not total_orders or total_seconds <= 0:
+    # Reusa a base do card de pedidos/hora (já calcula união e pedidos totais)
+    pph, active_seconds, total_orders = compute_orders_per_hour_union(
+        start_iso, end_iso, operator_id, marketplace_id, stage
+    )
+    if total_orders <= 0 or active_seconds <= 0:
         st.metric("**:yellow[Tempo médio por pedido]**", "00:00:00", border=True)
         return
 
-    avg_sec = int(round(total_seconds / total_orders))
+    avg_sec = int(round(active_seconds / total_orders))
     h, rem = divmod(avg_sec, 3600); m, s = divmod(rem, 60)
     st.metric("**:yellow[Tempo médio por pedido]**", f"{h:02d}:{m:02d}:{s:02d}", border=True)
+
 
 
 

@@ -73,13 +73,15 @@ def page_registro():
     op_names = [o["name"] for o in ops]
     mkt_names = [m["name"] for m in mkts]
 
-    c1, c2, c3 = st.columns([3, 3, 2])
+    c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
     with c1:
         op_name = st.selectbox("Operador", op_names, index=0 if op_names else None, placeholder="Selecione o operador")
     with c2:
         mkt_name = st.selectbox("Marketplace", mkt_names, index=0 if mkt_names else None, placeholder="Selecione o marketplace")
     with c3:
         num_orders = st.number_input("Qtd. pedidos", min_value=0, step=1, value=0)
+    with c4:
+        packers_count = st.number_input("Empacotadores", min_value=1, step=1, value=2)
 
     if not op_names or not mkt_names:
         st.warning("Cadastre operadores e marketplaces na página Configurações.")
@@ -100,7 +102,7 @@ def page_registro():
             if num_orders <= 0:
                 st.error("Informe a quantidade de pedidos antes de iniciar um novo lote.")
             else:
-                new_id = create_session(op_id, mkt_id, today, int(num_orders))
+                new_id = create_session(op_id, mkt_id, today, int(num_orders), int(packers_count))
                 st.session_state["session_key"] = new_id    
 
 
@@ -192,11 +194,17 @@ def page_registro():
 
     # Buscar dados reais do lote selecionad
 
+    
+
     sess = get_session(int(session_id))
     num_orders_hdr = sess["num_orders"] if sess else 0
+    packers_hdr = sess["packers_count"] if sess else 0
     hora_criacao = sess["created_at"].split(" ")[1] if (sess and sess["created_at"]) else "--:--:--"
 
-    st.markdown(f"##### :red[Lote {session_id} • {mkt_name} • {num_orders_hdr} pedidos • criado às {hora_criacao}]")
+    st.markdown(
+        f"### :red[Lote {session_id} • {mkt_name} • {num_orders_hdr} pedidos • {packers_hdr} empacotadores • criado às {hora_criacao}]"
+    )
+
 
 
     # Definir os pares para exibir lado a lado
@@ -256,7 +264,7 @@ def page_config():
 def main():
     _ensure_db_once()
 
-    st.set_page_config(page_title="Logística", page_icon="📦", layout="wide")
+    st.set_page_config(page_title="JL2 Logística", page_icon="📦", layout="wide")
 
     with st.sidebar:
         st.image("logo.png")
