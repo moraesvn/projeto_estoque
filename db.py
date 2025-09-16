@@ -391,23 +391,18 @@ def fetch_session_intervals(
     start: str,
     end: str,
     operator_id: int | None = None,
-    marketplace_id: int | None = None,
+    packers_count: int | None = None,   # <- trocado de marketplace_id para packers_count
     stage: str | None = None,
 ):
-    """
-    Retorna intervalos (por sessão) dentro do período:
-    - Sem etapa: [min(start_time de qualquer etapa), max(end_time de qualquer etapa)]
-    - Com etapa: [start_time(stage), end_time(stage)] daquela etapa
-    Ignora sessões cujo intervalo esteja totalmente vazio (sem start ou sem end).
-    Saída: lista de rows com colunas: session_id, day, start_ts, end_ts
-    """
     params = [start, end]
     flt = []
     if operator_id:
         flt.append("s.operator_id = ?"); params.append(operator_id)
-    if marketplace_id:
-        flt.append("s.marketplace_id = ?"); params.append(marketplace_id)
+    if packers_count:
+        flt.append("s.packers_count = ?"); params.append(packers_count)
     where_extra = (" AND " + " AND ".join(flt)) if flt else ""
+    # ... (restante da função permanece igual, usando where_extra)
+
 
     if stage is None:
         sql = f"""
@@ -592,13 +587,13 @@ def get_setting(key: str, default: str | None = None) -> str | None:
 
 
 #FUNCAO PARA USAR NA MEDIA DE TEMPO GASTO POR DIA
-def fetch_daily_end_to_end(start: str, end: str, operator_id: int | None = None, marketplace_id: int | None = None, stage: str | None = None):
+def fetch_daily_end_to_end(start: str, end: str, operator_id: int | None = None, packers_count: int | None = None, stage: str | None = None):
     params = [start, end]
     flt = []
     if operator_id:
         flt.append("s.operator_id = ?"); params.append(operator_id)
-    if marketplace_id:
-        flt.append("s.marketplace_id = ?"); params.append(marketplace_id)
+    if packers_count:
+        flt.append("s.packers_count = ?"); params.append(packers_count)
     where_extra = (" AND " + " AND ".join(flt)) if flt else ""
 
     if stage is None:
