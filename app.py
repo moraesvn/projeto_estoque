@@ -72,12 +72,13 @@ def page_registro():
 
     op_names = [o["name"] for o in ops]
     mkt_names = [m["name"] for m in mkts]
+    mkt_choices = ["Todos"] + mkt_names
 
     c1, c2, c3, c4 = st.columns([3, 3, 2, 2])
     with c1:
         op_name = st.selectbox("Operador", op_names, index=0 if op_names else None, placeholder="Selecione o operador")
     with c2:
-        mkt_name = st.selectbox("Marketplace", mkt_names, index=0 if mkt_names else None, placeholder="Selecione o marketplace")
+        mkt_name = st.selectbox("Marketplace", mkt_choices, index=0 if mkt_choices else None, placeholder="Selecione o marketplace")
     with c3:
         num_orders = st.number_input("Qtd. pedidos", min_value=0, step=1, value=0)
     with c4:
@@ -90,7 +91,8 @@ def page_registro():
     
     # Mapear para IDs
     op_id = next(o["id"] for o in ops if o["name"] == op_name)
-    mkt_id = next(m["id"] for m in mkts if m["name"] == mkt_name)
+    mkt_id = None if mkt_name == "Todos" else next(m["id"] for m in mkts if m["name"] == mkt_name)
+
 
     # ----- Controle de lote (sessão) -----
     today = date.today()
@@ -98,7 +100,7 @@ def page_registro():
     # Botão para criar um novo lote
     c_new, c_pick = st.columns([1, 2])
     with c_new:
-        if st.button("➕ Iniciar novo lote"):
+        if st.button("➕ Iniciar novo lote", disabled=(mkt_id is None)):
             if num_orders <= 0:
                 st.error("Informe a quantidade de pedidos antes de iniciar um novo lote.")
             else:
@@ -108,8 +110,19 @@ def page_registro():
 
     st.divider()
 
-        # Seletor de lote ativo (apenas lotes não finalizados)
-    sessions = list_sessions_today_with_status(op_id, mkt_id)
+    # Seletor de lote ativo (apenas lotes não finalizados)
+    # Seletor de lote ativo (lista os lotes de hoje)
+    if mkt_id is None:
+    # listar de TODOS os marketplaces desse operador
+        sessions = []
+        for m in mkts:
+            sessions += list_sessions_today_with_status(op_id, m["id"])
+    else:
+        sessions = list_sessions_today_with_status(op_id, mkt_id)
+
+    # ordenar (mais recentes primeiro)
+    sessions.sort(key=lambda r: ((r["created_at"] or ""), r["id"]), reverse=True)
+    
 
     def _is_done(r):
         return int(r["completed_stages"] or 0) >= int(r["total_stages"] or 0)
@@ -133,10 +146,10 @@ def page_registro():
             default_idx = 0
             if "session_key" in st.session_state and st.session_state["session_key"] in options:
                 default_idx = options.index(st.session_state["session_key"])
-            picked = st.selectbox("**Lotes ativos hoje do Marketplace selecionado**", options, index=default_idx, format_func=lambda x: labels[x])
+            picked = st.selectbox("**Lotes ativos hoje**", options, index=default_idx, format_func=lambda x: labels[x])
             st.session_state["session_key"] = picked
         else:
-            st.info("Nenhum lote ativo hoje para este Marketplace/Operador.")
+            st.info("Nenhum lote ativo hoje para este Operador.")
 
     with col_right:
         # Lista auxiliar com TODOS os lotes do dia (finalizados em verde)
@@ -200,9 +213,9 @@ def page_registro():
     num_orders_hdr = sess["num_orders"] if sess else 0
     packers_hdr = sess["packers_count"] if sess else 0
     hora_criacao = sess["created_at"].split(" ")[1] if (sess and sess["created_at"]) else "--:--:--"
-
+    mkt_name_hdr = next((m["name"] for m in mkts if m["id"] == sess["marketplace_id"]), "—") if sess else "—"
     st.markdown(
-        f"### :red[Lote {session_id} • {mkt_name} • {num_orders_hdr} pedidos • {packers_hdr} empacotadores • criado às {hora_criacao}]"
+    f"### :red[Lote {session_id} • {mkt_name_hdr} • {num_orders_hdr} pedidos • {packers_hdr} empacotadores • criado às {hora_criacao}]"
     )
 
 

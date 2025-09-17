@@ -76,27 +76,42 @@ def sidebar_period_filters():
 
 
 def sidebar_entity_filters():
-    """Operador, Empacotadores (no lugar de Marketplace) e Etapa.
-    Retorna (operator_id|None, packers_count|None, stage|None).
+    """Operador (com 'Todos'), Empacotadores (sem 'Todos'), Etapa (com 'Todas').
+    Retorna (operator_id|None, packers_count:int, stage|None).
     """
     ops = list_operators()
     op_choices = ["Todos"] + [o["name"] for o in ops]
-    packer_choices = ["Todos"] + [str(n) for n in _distinct_packers()]
+
+    # apenas os valores já usados em algum lote
+    packers_list = _distinct_packers()  # ex.: [1, 2, 3]
+    if not packers_list:
+        st.warning("Nenhum lote criado ainda. Definindo Empacotadores como 1.")
+        packers_list = [1]
+
+    # default: 2 se existir, senão 1, senão o primeiro da lista
+    if 2 in packers_list:
+        default_idx_pack = packers_list.index(2)
+    elif 1 in packers_list:
+        default_idx_pack = packers_list.index(1)
+    else:
+        default_idx_pack = 0
+
     stage_choices = ["Todas"] + list(STAGES)
 
     c1, c2, c3 = st.columns(3)
     with c1:
         op_choice = st.selectbox("Operador", op_choices, index=0)
     with c2:
-        packers_choice = st.selectbox("Empacotadores", packer_choices, index=0)
+        packers_choice = st.selectbox("Empacotadores", packers_list, index=default_idx_pack)
     with c3:
         stage_choice = st.selectbox("Etapa", stage_choices, index=0)
 
     op_map = {row["name"]: row["id"] for row in ops}
     operator_id = op_map.get(op_choice) if op_choice != "Todos" else None
-    packers_count = int(packers_choice) if packers_choice != "Todos" else None
+    packers_count = int(packers_choice)  # sempre um número válido
     stage = None if stage_choice == "Todas" else stage_choice
     return operator_id, packers_count, stage
+
 
 
 #FUNCAO PARA RECEBER A UNIR DOS INTERVALOR POR DIA. 
@@ -250,7 +265,7 @@ def table_all_sessions():
         """).fetchall()
     df = pd.DataFrame(rows, columns=rows[0].keys()) if rows else pd.DataFrame()
     st.subheader("Todas as sessões")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
 #TABELA COMPLETA STAGE_EVENTS DO BANCO DE DADOS
 def table_all_stage_events():
@@ -271,19 +286,20 @@ def table_all_stage_events():
         """).fetchall()
     df = pd.DataFrame(rows, columns=rows[0].keys()) if rows else pd.DataFrame()
     st.subheader("Todas as etapas")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
 
 def chart_orders_vs_time(start_iso: str, end_iso: str, operator_id: int | None, packers_count: int | None, stage: str | None):
-    from db import fetch_daily_end_to_end, get_conn
+    from db import fetch_daily_end_to_end, get_conn, get_setting
     import altair as alt
+    import math
 
-    # tempo ativo (união) por dia
+    # ---- tempo ativo (união) por dia ----
     rows_time = fetch_daily_end_to_end(start_iso, end_iso, operator_id, packers_count, stage)
-    df_time = pd.DataFrame(rows_time, columns=["day","total_seconds"]) if rows_time else pd.DataFrame(columns=["day","total_seconds"])
+    df_time = pd.DataFrame(rows_time, columns=["day", "total_seconds"]) if rows_time else pd.DataFrame(columns=["day","total_seconds"])
     df_time["total_hours"] = (df_time["total_seconds"].astype(float) / 3600.0).fillna(0.0)
 
-    # pedidos por dia (somatório de sessions no dia com filtros)
+    # ---- pedidos por dia ----
     params = [start_iso, end_iso]
     flt = []
     if operator_id:
@@ -291,7 +307,6 @@ def chart_orders_vs_time(start_iso: str, end_iso: str, operator_id: int | None, 
     if packers_count:
         flt.append("s.packers_count = ?"); params.append(packers_count)
     where_extra = (" AND " + " AND ".join(flt)) if flt else ""
-
     with get_conn(readonly=True) as conn:
         rows_orders = conn.execute(
             f"""
@@ -305,22 +320,60 @@ def chart_orders_vs_time(start_iso: str, end_iso: str, operator_id: int | None, 
         ).fetchall()
     df_orders = pd.DataFrame(rows_orders, columns=["day","total_orders"]) if rows_orders else pd.DataFrame(columns=["day","total_orders"])
 
-    # pedidos/hora por dia
+    # ---- consolidar + pedidos/h por dia ----
     df = pd.merge(df_orders, df_time[["day","total_hours"]], on="day", how="outer").fillna(0)
     df["orders_per_hour"] = df.apply(lambda r: (r["total_orders"] / r["total_hours"]) if r["total_hours"] > 0 else 0.0, axis=1)
 
     if df.empty:
-        st.info("Sem dados para o período."); return
+        st.info("Sem dados para o período."); 
+        return
 
-    base = alt.Chart(df).encode(x="day:T")
-    line1 = base.mark_line(point=True, color="steelblue").encode(
-        y=alt.Y("orders_per_hour:Q", axis=alt.Axis(title="Pedidos por hora", titleColor="steelblue"))
+    # ---- ticks & domínios ----
+    # eixo esquerdo (pedidos/h) de 30 em 30
+    max_pph = max(float(df["orders_per_hour"].max() or 0.0), float(get_setting("orders_per_hour_target", "0") or 0))
+    max_pph = math.ceil(max_pph / 30.0) * 30  # arredonda para múltiplo de 30
+    pph_ticks = list(range(0, int(max_pph) + 30, 30)) or [0, 30, 60]
+
+    # eixo direito (horas) de 0.5 em 0.5
+    max_hours = float(df["total_hours"].max() or 0.0)
+    max_hours = math.ceil(max_hours * 2) / 2.0  # próximo múltiplo de 0.5
+    if max_hours == 0:
+        max_hours = 0.5
+    hour_ticks = [i / 2 for i in range(0, int(max_hours * 2) + 1)]  # 0, 0.5, 1.0, ...
+
+    # meta (linha horizontal no eixo esquerdo)
+    target = int(float(get_setting("orders_per_hour_target", "0") or 0))
+    rule_df = df[["day"]].copy()
+    rule_df["target"] = target
+
+    base = alt.Chart(df).encode(x=alt.X("day:T", title="Dia"))
+
+    line_pph = base.mark_line(point=True, color="steelblue").encode(
+        y=alt.Y(
+            "orders_per_hour:Q",
+            title="Pedidos por hora",
+            scale=alt.Scale(domain=[0, max_pph]),
+            axis=alt.Axis(titleColor="steelblue", values=pph_ticks),
+        )
     )
-    line2 = base.mark_line(point=True, color="green").encode(
-        y=alt.Y("total_hours:Q", axis=alt.Axis(title="Tempo ativo (h)", titleColor="green"))
+
+    line_hours = base.mark_line(point=True, color="green").encode(
+        y=alt.Y(
+            "total_hours:Q",
+            title="Tempo ativo (h)",
+            scale=alt.Scale(domain=[0, max_hours]),
+            axis=alt.Axis(titleColor="green", values=hour_ticks),
+        )
     )
+
+    rule = alt.Chart(rule_df).mark_rule(color="red", strokeDash=[4,4]).encode(
+        x="day:T",
+        y=alt.Y("target:Q", scale=alt.Scale(domain=[0, max_pph]), axis=None)
+    )
+
     st.subheader("Produtividade x Tempo por dia")
-    st.altair_chart(alt.layer(line1, line2).resolve_scale(y="independent").interactive(), use_container_width=True)
+    chart = alt.layer(line_pph, line_hours, rule).resolve_scale(y="independent").interactive()
+    st.altair_chart(chart, use_container_width=True)
 
 
 # -----------------------------
@@ -339,11 +392,10 @@ def render():
     st.subheader(" :red[📊 Métricas]")
 
 
-    # Dentro do render(), onde quiser mostrar os cards:
+    # Dentro do render():
     col1, col2, col3 = st.columns(3)
     with col1:
         card_orders_per_hour(start_iso, end_iso, operator_id, packers_count, stage)
-
     with col2:
         card_avg_daily_total_time(start_iso, end_iso, operator_id, packers_count, stage)    
     with col3:
